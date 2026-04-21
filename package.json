@@ -1,0 +1,9 @@
+{
+  "name": "baileys-server",
+  "scripts": { "start": "node server.js" },
+  "dependencies": {
+    "@whiskeysockets/baileys": "latest",
+    "express": "^4.18.2",
+    "pino": "^8.17.0"
+  }
+}
