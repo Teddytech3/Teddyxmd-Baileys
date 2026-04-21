@@ -7,9 +7,11 @@ app.use(express.json())
 
 let sock
 let qrCode = null
+let state, saveCreds
 
 async function start() {
-    const { state, saveCreds } = await useMultiFileAuthState('./auth')
+    const { state: s, saveCreds: sc } = await useMultiFileAuthState('./auth')
+    state = s; saveCreds = sc
     sock = makeWASocket({
         auth: state,
         logger: pino({ level: 'silent' }),
@@ -24,7 +26,6 @@ async function start() {
         if(qr) {
             qrCode = qr
             console.log('QR Code:', qr)
-            console.log('Scan this QR with WhatsApp > Linked Devices')
         }
         if(connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode!== DisconnectReason.loggedOut
@@ -41,18 +42,37 @@ async function start() {
     })
 }
 
+// Request pairing code with phone number
+app.get('/pair/:phone', async (req, res) => {
+    try {
+        if (!sock) return res.status(503).send('Socket not initialized yet. Wait 5 sec and try again.')
+        if (sock.user) return res.send('Already paired and connected.')
+
+        const phoneNumber = req.params.phone.replace(/[^0-9]/g, '') // strip +, spaces, etc
+        if (!phoneNumber) return res.status(400).send('Invalid phone number')
+
+        const code = await sock.requestPairingCode(phoneNumber)
+        res.send(`Pairing code for ${phoneNumber}: ${code}<br>Go to WhatsApp > Linked Devices > Link with phone number > Enter this code`)
+    } catch (e) {
+        console.log('Pair error:', e)
+        res.status(500).send('Error: ' + e.toString() + '<br>Make sure you are NOT connected yet. If QR was shown, restart service first.')
+    }
+})
+
 app.get('/qr', (req, res) => {
     if (qrCode) {
         res.send(`<html><body><h1>Scan QR</h1><p>${qrCode}</p><p>Use https://qr.io to convert this text to image</p></body></html>`)
+    } else if (sock?.user) {
+        res.send('Already connected as: ' + sock.user.id)
     } else {
-        res.send('No QR pending. Already connected or restart service.')
+        res.send('No QR pending. Restart service if not connected.')
     }
 })
 
 app.post('/send-message', async (req, res) => {
     try {
         const { jid, message } = req.body
-        if (!sock) return res.status(503).json({ error: 'WhatsApp not connected yet' })
+        if (!sock?.user) return res.status(503).json({ error: 'WhatsApp not connected yet' })
         await sock.sendMessage(jid, message)
         res.json({ success: true })
     } catch (e) {
@@ -66,7 +86,17 @@ app.get('/session', (req, res) => {
         const creds = fs.readFileSync('./auth/creds.json')
         res.send('Teddy-xmd~' + creds.toString('base64'))
     } catch (e) {
-        res.status(500).send('Session not ready yet. Scan QR first.')
+        res.status(500).send('Session not ready yet. Pair first.')
+    }
+})
+
+app.get('/logout', async (req, res) => {
+    try {
+        if (sock) await sock.logout()
+        fs.rmSync('./auth', { recursive: true, force: true })
+        res.send('Logged out. Restart Railway service to get new QR or pairing code.')
+    } catch (e) {
+        res.send('Error: ' + e)
     }
 })
 
